@@ -145,6 +145,27 @@ function settledToolResult(result: unknown, callId: string): unknown {
   return inner ?? settled
 }
 
+async function resolveCallerAgent(
+  req: { headers: Record<string, string | string[] | undefined> },
+  resolveAgent?: (sessionId: string) => unknown | Promise<unknown>,
+): Promise<unknown> {
+  const sessionHeader = String(req.headers['x-dsh-session'] ?? '')
+  const resolveSession = async (id: string): Promise<unknown> =>
+    id === '' ? undefined : await Promise.resolve(resolveAgent?.(id))
+  // DSH session keys come in two forms: a top-level web session is
+  // `session-<uuid>`, a sub-agent/fork session is a bare `<uuid>`. The
+  // spawning key is injected automatically, so resolve the value as
+  // given first (a bare sub-agent key must not be rewritten); only when
+  // that finds no agent and the value is not prefixed yet, retry once
+  // with `session-` - otherwise such a call runs without a caller and
+  // fails with `agent_teams tools require a calling agent`.
+  let agent = await resolveSession(sessionHeader)
+  if (agent === undefined && sessionHeader !== '' && !sessionHeader.startsWith('session-')) {
+    agent = await resolveSession('session-' + sessionHeader)
+  }
+  return agent
+}
+
 /**
  * Start the loopback endpoint. Resolves once listening. The tools service
  * may arrive later (optional service): pass a thunk.
@@ -175,10 +196,14 @@ export function startMcpBridge(opts: {
           sendJson(res, 503, { error: 'tools service unavailable' })
           return
         }
+        // Resolve the calling session agent so scoped tools (e.g. dsh-rp-world's
+        // RP_world_*) and per-agent tool restrictions are honored on /tools just
+        // as on /call.
+        const agent = await resolveCallerAgent(req, opts.resolveAgent)
         const allow = opts.allowlist().split(',').map((s) => s.trim()).filter(Boolean)
         const allowSet = new Set(allow)
         const used = new Set<string>()
-        const tools = svc.schemas()
+        const tools = svc.schemas(agent)
           .filter((t) => allow.length === 0 || allowSet.has(t.name))
           // internal transports / loopback-only helpers are not bridgeable
           .filter((t) => !INTERNAL_TOOL_NAMES.has(t.name))
@@ -252,20 +277,7 @@ export function startMcpBridge(opts: {
           // Carry the caller: the session that spawned agy is the agent on
           // whose behalf this call runs (issue #55). Without it, tools that
           // enforce `exec.agent` reject the call.
-          const sessionHeader = String(req.headers['x-dsh-session'] ?? '')
-          const resolveSession = async (id: string): Promise<unknown> =>
-            id === '' ? undefined : await Promise.resolve(opts.resolveAgent?.(id))
-          // DSH session keys come in two forms: a top-level web session is
-          // `session-<uuid>`, a sub-agent/fork session is a bare `<uuid>`. The
-          // spawning key is injected automatically, so resolve the value as
-          // given first (a bare sub-agent key must not be rewritten); only when
-          // that finds no agent and the value is not prefixed yet, retry once
-          // with `session-` - otherwise such a call runs without a caller and
-          // fails with `agent_teams tools require a calling agent`.
-          let agent = await resolveSession(sessionHeader)
-          if (agent === undefined && sessionHeader !== '' && !sessionHeader.startsWith('session-')) {
-            agent = await resolveSession('session-' + sessionHeader)
-          }
+          const agent = await resolveCallerAgent(req, opts.resolveAgent)
           // Every DSH tool receives `exec.signal`; tools that await inside their
           // body read it, so a call without one throws
           // `Cannot read properties of undefined (reading 'aborted')`.
@@ -399,6 +411,10 @@ export function writeMcpConfig(file: string, bridge: McpBridge): () => void {
     env: {
       DSH_MCP_URL: bridge.url,
       DSH_MCP_TOKEN: bridge.token,
+      // When DSH runs as the packaged Electron desktop app, process.execPath is
+      // the Electron binary; without this flag agy spawns a second GUI window
+      // instead of executing bridge.mjs. Plain node ignores it.
+      ELECTRON_RUN_AS_NODE: '1',
     },
   }
   root.mcpServers = servers

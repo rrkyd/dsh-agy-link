@@ -255,12 +255,14 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
   })
 
   // The /config route is module-owning, so it calls back through this hook to
-  // re-sync the ask/mirror tools after a config write (same as the old inline route).
+  // re-sync the ask/mirror tools and MCP bridge after a config write.
   services.onConfigWritten = (key, value) => {
-    void key
     void value
     syncAskTool()
     syncMirrorTool()
+    if (key === 'mcpBridge' || key === 'mcpConfigScope' || key === 'mcpConfigPath') {
+      syncMcpBridge()
+    }
   }
 
   // ---- HTTP surface for the client half ----

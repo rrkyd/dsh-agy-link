@@ -12,6 +12,7 @@ function handleConfig(services: HostServices, req: unknown, res: unknown): void 
         const key = typeof body.key === 'string' ? body.key : ''
         const allowed = [
           'permissionMode', 'defaultModel', 'defaultEffort', 'askTool', 'workspaceRoot', 'hiddenModels', 'autoWarmup', 'warmupModels',
+          'forwardSystemPrompt', 'mcpBridge', 'mcpConfigScope', 'mcpToolAllowlist',
           'autoTranslate', 'translateModel', 'translateEffort', 'translateTargetLanguage', 'translateMaxChars', 'translateSkipSameModel', 'translateBindConversation', 'translateMinIntervalMs',
           'imageModel', 'imageEffort', 'imageTimeoutMs', 'imageMaxBytes', 'imageOutputDir', 'imageRetries',
           'showHeaderBadge', 'showTranslateAction', 'poolWideCatalog',

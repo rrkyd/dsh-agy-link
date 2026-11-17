@@ -138,6 +138,78 @@ export function isRealUserMessage(m: Message): boolean {
   return textOf(m).trim() !== ''
 }
 
+function isRuntimeContextSnapshot(m: Message): boolean {
+  if (isToolResultMessage(m)) return false
+  const src = (m as unknown as ForeignSource).source
+  const kind = src?.kind
+  if (kind === 'runtime-context') return true
+  if (kind === 'plugin' && (src as { form?: string }).form === 'snapshot') return true
+  return false
+}
+
+/**
+ * Latest runtime-context snapshot at or after `fromIdx` (e.g. dsh-rp-world's
+ * per-turn `rp-world:brief` world-state card). Returns empty string if none is
+ * found or if a fresh conversation carries only the cleared placeholder.
+ */
+export function latestRuntimeContextText(messages: readonly Message[], fromIdx = 0): string {
+  const start = Math.max(0, fromIdx)
+  for (let i = messages.length - 1; i >= start; i--) {
+    const m = messages[i]
+    if (m === undefined || !isRuntimeContextSnapshot(m)) continue
+    const text = textOf(m).trim()
+    if (text === '') continue
+    if (start === 0 && text.startsWith('Current runtime context: none.')) return ''
+    return text
+  }
+  return ''
+}
+
+/** Latest harness context message matching `source.kind === kind` at or after `fromIdx`. */
+export function latestContextByKind(messages: readonly Message[], fromIdx: number, kind: string): string {
+  const start = Math.max(0, fromIdx)
+  for (let i = messages.length - 1; i >= start; i--) {
+    const m = messages[i]
+    if (m === undefined || isToolResultMessage(m)) continue
+    const src = (m as unknown as ForeignSource).source
+    if (src?.kind !== kind) continue
+    const text = textOf(m).trim()
+    if (text !== '') return text
+  }
+  return ''
+}
+
+export function prependHostContext(input: {
+  prompt: string
+  forwardSystemPrompt: boolean
+  forwardSystem: boolean
+  isAux: boolean
+  systemOption: string | undefined
+  fromIdx: number
+  messages: readonly Message[]
+}): string {
+  const { forwardSystemPrompt, forwardSystem, isAux, systemOption, fromIdx, messages } = input
+  if (!forwardSystem) return input.prompt
+
+  const prefixes: string[] = []
+  const sysInstruction = systemOption || (() => {
+    const sm = messages.find((m) => m.role === 'system')
+    return sm ? textOf(sm).trim() : ''
+  })()
+  if (sysInstruction) {
+    prefixes.push('System instructions:\n' + sysInstruction)
+  }
+
+  if (forwardSystemPrompt && !isAux) {
+    const skillCatalog = latestContextByKind(messages, fromIdx, 'skill-catalog')
+    if (skillCatalog !== '') prefixes.push(skillCatalog)
+    const runtimeContext = latestRuntimeContextText(messages, fromIdx)
+    if (runtimeContext !== '') prefixes.push('Runtime context:\n' + runtimeContext)
+  }
+
+  return prefixes.length > 0 ? prefixes.join('\n\n') + '\n\n' + input.prompt : input.prompt
+}
+
 /**
  * Latest real human turn (not a tool result, not assistant, not harness metadata).
  * This is the live task; a digest or tool-result-only trailing span must never drop it

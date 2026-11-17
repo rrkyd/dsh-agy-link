@@ -23,6 +23,7 @@ import {
   isForeignAssistant,
   isSyntheticHarnessMessage,
   isToolResultMessage,
+  prependHostContext,
   latestUserMessageAny,
   latestUserTaskText,
   textOf,
@@ -167,16 +168,18 @@ export async function buildPromptPlan(input: PromptPlanInput): Promise<PromptPla
 
   // forwardSystemPrompt is opt-in for ordinary turns (agy already owns its
   // own agent instructions). A review/title call always forwards it: the whole
-  // output protocol rides in `options.system`.
-  if (cfg.forwardSystemPrompt || ctx.isReview || ctx.isTitle) {
-    const sysInstruction = options.system || (() => {
-      const sm = messages.find((m) => m.role === 'system')
-      return sm ? textOf(sm).trim() : ''
-    })()
-    if (sysInstruction) {
-      prompt = 'System instructions:\n' + sysInstruction + '\n\n' + prompt
-    }
-  }
+  // output protocol rides in `options.system`. When forwardSystemPrompt is on,
+  // also forward DSH's latest runtime-context snapshot (e.g. rp-world:brief)
+  // and skill catalog so plugins like dsh-rp-world work through agy.
+  prompt = prependHostContext({
+    prompt,
+    forwardSystemPrompt: cfg.forwardSystemPrompt,
+    forwardSystem: cfg.forwardSystemPrompt || ctx.isReview || ctx.isTitle,
+    isAux,
+    systemOption: options.system,
+    fromIdx: binding !== undefined ? Math.max(Math.min(binding.lastMessageCount, messages.length), lastAssistantIdx + 1) : 0,
+    messages,
+  })
 
   // ---- multimodal staging (v0.2): images ride as staged files ----
   const newlySentImageIds: string[] = []

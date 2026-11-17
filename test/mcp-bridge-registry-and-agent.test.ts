@@ -381,3 +381,68 @@ test('DSH send_message can be bridged when it is allowlisted', async () => {
     await bridge.close()
   }
 })
+
+test('/tools passes caller agent scope from X-DSH-Session so scoped tools like RP_world_* appear', async () => {
+  const receivedScopes: Array<unknown> = []
+  const tools = {
+    schemas: (scope?: unknown) => {
+      receivedScopes.push(scope)
+      const globalTools = [
+        { name: 'read', description: 'read', parameters: { type: 'object', properties: {} } },
+      ]
+      if ((scope as { id?: string } | undefined)?.id === 'rp-agent') {
+        return [
+          ...globalTools,
+          { name: 'RP_world_commit', description: 'commit rp state', parameters: { type: 'object', properties: {} } },
+          { name: 'RP_world_person_read', description: 'read rp person', parameters: { type: 'object', properties: {} } },
+        ]
+      }
+      return globalTools
+    },
+    execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+  }
+  const bridge = await startMcpBridge({
+    bridgeScript: BRIDGE_SCRIPT,
+    tools: () => tools,
+    allowlist: () => '',
+    resolveAgent: (sessionId) => (sessionId === 'session-rp-1' ? { id: 'rp-agent', session: sessionId } : undefined),
+  })
+  try {
+    const anonRes = await fetch(bridge.url + '/tools', {
+      headers: { Authorization: 'Bearer ' + bridge.token },
+    })
+    const anonBody = (await anonRes.json()) as { tools: Array<{ dshName: string }> }
+    assert.deepEqual(anonBody.tools.map((t) => t.dshName), ['read'])
+    assert.equal(receivedScopes.at(-1), undefined)
+
+    const scopedRes = await fetch(bridge.url + '/tools', {
+      headers: { Authorization: 'Bearer ' + bridge.token, 'X-DSH-Session': 'rp-1' },
+    })
+    const scopedBody = (await scopedRes.json()) as { tools: Array<{ dshName: string }> }
+    assert.deepEqual(scopedBody.tools.map((t) => t.dshName), ['read', 'RP_world_commit', 'RP_world_person_read'])
+    assert.deepEqual(receivedScopes.at(-1), { id: 'rp-agent', session: 'session-rp-1' })
+  } finally {
+    await bridge.close()
+  }
+})
+
+test('writeMcpConfig sets ELECTRON_RUN_AS_NODE=1 so Electron desktop hosts run bridge.mjs as node', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-registry-electron-'))
+  const file = join(dir, 'mcp_config.json')
+  try {
+    const restore = writeMcpConfig(file, {
+      bridgeScript: BRIDGE_SCRIPT,
+      token: 'tk',
+      url: 'http://127.0.0.1:4300',
+      port: 4300,
+      close: async () => undefined,
+    })
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as {
+      mcpServers: Record<string, { env?: Record<string, string> }>
+    }
+    assert.equal(parsed.mcpServers[mcpServerKey(4300)]?.env?.ELECTRON_RUN_AS_NODE, '1')
+    restore()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

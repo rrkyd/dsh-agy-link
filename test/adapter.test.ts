@@ -2809,3 +2809,67 @@ test('purpose:image uses the verbatim bridge prompt, the configured mode and the
     process.env.FAKE_AGY_MODE = 'ok'
   }
 })
+
+test('forwardSystemPrompt forwards runtime-context snapshots and skill-catalog for dsh-rp-world turns', async () => {
+  const { adapter, store } = makeAdapter({ forwardSystemPrompt: true })
+  process.env.FAKE_AGY_MODE = 'ok'
+  const argsFile = join(workDir, 'args-rp-world-brief.json')
+  process.env.FAKE_AGY_ARGS_FILE = argsFile
+  try {
+    const briefTurn1 = {
+      role: 'user',
+      content: [{ type: 'text', text: '世界状态卡 · 第10回合\n时间：第1天 18:30\n场景：直播间·开放厨房' }],
+      source: { kind: 'runtime-context', form: 'snapshot', sections: ['rp-world:brief'] },
+    } as unknown as Message
+    const skillCatalog = {
+      role: 'user',
+      content: [{ type: 'text', text: '<system-reminder>\nAvailable skills: rp-scene\n</system-reminder>' }],
+      source: { kind: 'skill-catalog' },
+    } as unknown as Message
+
+    await runTurn(adapter, [
+      msg('user', '切到开放厨房看苏晚'),
+      skillCatalog,
+      briefTurn1,
+    ], {
+      sessionId: 'sess-rp-world' as never,
+      system: '# 世界运行规则（dsh-rp-world）',
+    } as never)
+
+    const argv1 = JSON.parse(readFileSync(argsFile, 'utf8')) as string[]
+    const prompt1 = argv1[argv1.indexOf('-p') + 1] ?? ''
+    assert.ok(prompt1.startsWith('System instructions:\n# 世界运行规则（dsh-rp-world）'), 'system rules forwarded first')
+    assert.ok(prompt1.includes('Available skills: rp-scene'), 'skill catalog forwarded on turn 1')
+    assert.ok(prompt1.includes('Runtime context:\n世界状态卡 · 第10回合'), 'world brief snapshot forwarded on turn 1')
+    assert.ok(prompt1.includes('切到开放厨房看苏晚'), 'real user request preserved')
+
+    // Turn 2 on the bound conversation: an updated runtime-context snapshot arrives after the assistant reply.
+    const bound = await waitFor(() => store.get('sess-rp-world'))
+    assert.ok(bound !== undefined, 'session bound after turn 1')
+    const briefTurn2 = {
+      role: 'user',
+      content: [{ type: 'text', text: '世界状态卡 · 第11回合\n时间：第1天 18:35\n场景：直播间·开放厨房' }],
+      source: { kind: 'runtime-context', form: 'snapshot', sections: ['rp-world:brief'] },
+    } as unknown as Message
+
+    await runTurn(adapter, [
+      msg('user', '切到开放厨房看苏晚'),
+      skillCatalog,
+      briefTurn1,
+      msg('assistant', '你点进了开放厨房直播间。'),
+      msg('user', '打赏她一杯柠檬水'),
+      briefTurn2,
+    ], {
+      sessionId: 'sess-rp-world' as never,
+      system: '# 世界运行规则（dsh-rp-world）',
+    } as never)
+
+    const argv2 = JSON.parse(readFileSync(argsFile, 'utf8')) as string[]
+    const prompt2 = argv2[argv2.indexOf('-p') + 1] ?? ''
+    assert.ok(prompt2.includes('Runtime context:\n世界状态卡 · 第11回合'), 'updated brief forwarded on turn 2')
+    assert.equal(prompt2.includes('世界状态卡 · 第10回合'), false, 'stale turn-1 brief is not re-sent')
+    assert.ok(prompt2.includes('打赏她一杯柠檬水'), 'turn-2 user request preserved')
+  } finally {
+    delete process.env.FAKE_AGY_ARGS_FILE
+  }
+})
